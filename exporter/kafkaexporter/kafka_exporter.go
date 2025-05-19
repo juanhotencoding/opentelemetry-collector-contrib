@@ -10,6 +10,7 @@ import (
 	"iter"
 
 	"github.com/IBM/sarama"
+	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
@@ -112,14 +113,11 @@ func (e *kafkaExporter[T]) exportData(ctx context.Context, data T) error {
 		saramaMessages := makeSaramaMessages(partitionMessages, e.messager.getTopic(ctx, data))
 		allSaramaMessages = append(allSaramaMessages, saramaMessages...)
 	}
+	messagesWithHeaders(allSaramaMessages, metadataToHeaders(
+		ctx, e.cfg.IncludeMetadataKeys,
+	))
 	if err := e.producer.SendMessages(allSaramaMessages); err != nil {
-		var prodErr sarama.ProducerErrors
-		if errors.As(err, &prodErr) {
-			if len(prodErr) > 0 {
-				return kafkaErrors{len(prodErr), prodErr[0].Err.Error()}
-			}
-		}
-		return err
+		return wrapKafkaProducerError(err)
 	}
 	return nil
 }
@@ -127,12 +125,12 @@ func (e *kafkaExporter[T]) exportData(ctx context.Context, data T) error {
 func newTracesExporter(config Config, set exporter.Settings) *kafkaExporter[ptrace.Traces] {
 	// Jaeger encodings do their own partitioning, so disable trace ID
 	// partitioning when they are configured.
-	switch config.Encoding {
+	switch config.Traces.Encoding {
 	case "jaeger_proto", "jaeger_json":
 		config.PartitionTracesByID = false
 	}
 	return newKafkaExporter(config, set, func(host component.Host) (kafkaMessager[ptrace.Traces], error) {
-		marshaler, err := getTracesMarshaler(config.Encoding, host)
+		marshaler, err := getTracesMarshaler(config.Traces.Encoding, host)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +151,7 @@ func (e *kafkaTracesMessager) marshalData(td ptrace.Traces) ([]marshaler.Message
 }
 
 func (e *kafkaTracesMessager) getTopic(ctx context.Context, td ptrace.Traces) string {
-	return getTopic(ctx, &e.config, td.ResourceSpans())
+	return getTopic(ctx, &e.config, e.config.Traces.Topic, td.ResourceSpans())
 }
 
 func (e *kafkaTracesMessager) partitionData(td ptrace.Traces) iter.Seq2[[]byte, ptrace.Traces] {
@@ -177,7 +175,7 @@ func (e *kafkaTracesMessager) partitionData(td ptrace.Traces) iter.Seq2[[]byte, 
 
 func newLogsExporter(config Config, set exporter.Settings) *kafkaExporter[plog.Logs] {
 	return newKafkaExporter(config, set, func(host component.Host) (kafkaMessager[plog.Logs], error) {
-		marshaler, err := getLogsMarshaler(config.Encoding, host)
+		marshaler, err := getLogsMarshaler(config.Logs.Encoding, host)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +196,7 @@ func (e *kafkaLogsMessager) marshalData(ld plog.Logs) ([]marshaler.Message, erro
 }
 
 func (e *kafkaLogsMessager) getTopic(ctx context.Context, ld plog.Logs) string {
-	return getTopic(ctx, &e.config, ld.ResourceLogs())
+	return getTopic(ctx, &e.config, e.config.Logs.Topic, ld.ResourceLogs())
 }
 
 func (e *kafkaLogsMessager) partitionData(ld plog.Logs) iter.Seq2[[]byte, plog.Logs] {
@@ -220,7 +218,7 @@ func (e *kafkaLogsMessager) partitionData(ld plog.Logs) iter.Seq2[[]byte, plog.L
 
 func newMetricsExporter(config Config, set exporter.Settings) *kafkaExporter[pmetric.Metrics] {
 	return newKafkaExporter(config, set, func(host component.Host) (kafkaMessager[pmetric.Metrics], error) {
-		marshaler, err := getMetricsMarshaler(config.Encoding, host)
+		marshaler, err := getMetricsMarshaler(config.Metrics.Encoding, host)
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +239,7 @@ func (e *kafkaMetricsMessager) marshalData(md pmetric.Metrics) ([]marshaler.Mess
 }
 
 func (e *kafkaMetricsMessager) getTopic(ctx context.Context, md pmetric.Metrics) string {
-	return getTopic(ctx, &e.config, md.ResourceMetrics())
+	return getTopic(ctx, &e.config, e.config.Metrics.Topic, md.ResourceMetrics())
 }
 
 func (e *kafkaMetricsMessager) partitionData(md pmetric.Metrics) iter.Seq2[[]byte, pmetric.Metrics] {
@@ -270,7 +268,12 @@ type resource interface {
 	Resource() pcommon.Resource
 }
 
-func getTopic[T resource](ctx context.Context, cfg *Config, resources resourceSlice[T]) string {
+func getTopic[T resource](
+	ctx context.Context,
+	cfg *Config,
+	defaultTopic string,
+	resources resourceSlice[T],
+) string {
 	if cfg.TopicFromAttribute != "" {
 		for i := 0; i < resources.Len(); i++ {
 			rv, ok := resources.At(i).Resource().Attributes().Get(cfg.TopicFromAttribute)
@@ -283,17 +286,74 @@ func getTopic[T resource](ctx context.Context, cfg *Config, resources resourceSl
 	if ok {
 		return contextTopic
 	}
-	return cfg.Topic
+	return defaultTopic
 }
 
 func makeSaramaMessages(messages []marshaler.Message, topic string) []*sarama.ProducerMessage {
 	saramaMessages := make([]*sarama.ProducerMessage, len(messages))
 	for i, message := range messages {
-		saramaMessages[i] = &sarama.ProducerMessage{
+		msg := &sarama.ProducerMessage{
 			Topic: topic,
-			Key:   sarama.ByteEncoder(message.Key),
-			Value: sarama.ByteEncoder(message.Value),
 		}
+		if message.Key != nil {
+			msg.Key = sarama.ByteEncoder(message.Key)
+		}
+		if message.Value != nil {
+			msg.Value = sarama.ByteEncoder(message.Value)
+		}
+		saramaMessages[i] = msg
 	}
 	return saramaMessages
+}
+
+func messagesWithHeaders(msg []*sarama.ProducerMessage, h []sarama.RecordHeader) {
+	if len(h) == 0 || len(msg) == 0 {
+		return
+	}
+	for i := range msg {
+		if len(msg[i].Headers) == 0 {
+			msg[i].Headers = h
+			continue
+		}
+		msg[i].Headers = append(msg[i].Headers, h...)
+	}
+}
+
+func metadataToHeaders(ctx context.Context, keys []string) []sarama.RecordHeader {
+	if len(keys) == 0 {
+		return nil
+	}
+	info := client.FromContext(ctx)
+	headers := make([]sarama.RecordHeader, 0, len(keys))
+	for _, key := range keys {
+		valueSlice := info.Metadata.Get(key)
+		for _, v := range valueSlice {
+			headers = append(headers, sarama.RecordHeader{
+				Key:   []byte(key),
+				Value: []byte(v),
+			})
+		}
+	}
+	return headers
+}
+
+func wrapKafkaProducerError(err error) error {
+	var prodErr sarama.ProducerErrors
+	if !errors.As(err, &prodErr) || len(prodErr) == 0 {
+		return err
+	}
+
+	var areConfigErrs bool
+	var confErr sarama.ConfigurationError
+	for _, producerErr := range prodErr {
+		if areConfigErrs = errors.As(producerErr.Err, &confErr); !areConfigErrs {
+			break
+		}
+	}
+
+	if areConfigErrs {
+		return consumererror.NewPermanent(confErr)
+	}
+
+	return kafkaErrors{len(prodErr), prodErr[0].Err.Error()}
 }

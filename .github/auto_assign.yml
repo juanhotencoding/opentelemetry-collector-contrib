@@ -12,6 +12,7 @@ assigneeGroups:
   approvers_maintainers:
     # Approvers
     - ArthurSens
+    - braydonk
     - ChrsMark
     - crobert-1
     # - dashpole on leave
@@ -27,7 +28,6 @@ assigneeGroups:
     - djaglowski
     - dmitryax
     - evan-bradley
-    - jpkrohling
     - MovieStoreGuy
     - mx-psi
     - songy23

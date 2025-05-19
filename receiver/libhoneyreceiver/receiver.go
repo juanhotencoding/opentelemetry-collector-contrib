@@ -105,9 +105,9 @@ func (r *libhoneyReceiver) startHTTPServer(ctx context.Context, host component.H
 		return err
 	}
 
-	r.settings.Logger.Info("Starting HTTP server", zap.String("endpoint", r.cfg.HTTP.ServerConfig.Endpoint))
+	r.settings.Logger.Info("Starting HTTP server", zap.String("endpoint", r.cfg.HTTP.Endpoint))
 	var hln net.Listener
-	if hln, err = r.cfg.HTTP.ServerConfig.ToListener(ctx); err != nil {
+	if hln, err = r.cfg.HTTP.ToListener(ctx); err != nil {
 		return err
 	}
 
@@ -253,7 +253,7 @@ func (r *libhoneyReceiver) handleEvent(resp http.ResponseWriter, req *http.Reque
 	}
 
 	noErrors := []byte(`{"errors":[]}`)
-	writeResponse(resp, enc.ContentType(), http.StatusAccepted, noErrors)
+	writeResponse(resp, enc.ContentType(), http.StatusOK, noErrors)
 }
 
 func readContentType(resp http.ResponseWriter, req *http.Request) (encoder.Encoder, bool) {

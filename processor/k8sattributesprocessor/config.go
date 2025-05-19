@@ -5,11 +5,12 @@ package k8sattributesprocessor // import "github.com/open-telemetry/opentelemetr
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"time"
 
 	"go.opentelemetry.io/collector/featuregate"
-	conventions "go.opentelemetry.io/collector/semconv/v1.6.1"
+	conventions "go.opentelemetry.io/otel/semconv/v1.6.1"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/k8sconfig"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor/internal/kube"
@@ -89,17 +90,17 @@ func (cfg *Config) Validate() error {
 
 	for _, field := range cfg.Extract.Metadata {
 		switch field {
-		case conventions.AttributeK8SNamespaceName, conventions.AttributeK8SPodName, conventions.AttributeK8SPodUID,
+		case string(conventions.K8SNamespaceNameKey), string(conventions.K8SPodNameKey), string(conventions.K8SPodUIDKey),
 			specPodHostName, metadataPodStartTime, metadataPodIP,
-			conventions.AttributeK8SDeploymentName, conventions.AttributeK8SDeploymentUID,
-			conventions.AttributeK8SReplicaSetName, conventions.AttributeK8SReplicaSetUID,
-			conventions.AttributeK8SDaemonSetName, conventions.AttributeK8SDaemonSetUID,
-			conventions.AttributeK8SStatefulSetName, conventions.AttributeK8SStatefulSetUID,
-			conventions.AttributeK8SJobName, conventions.AttributeK8SJobUID,
-			conventions.AttributeK8SCronJobName,
-			conventions.AttributeK8SNodeName, conventions.AttributeK8SNodeUID,
-			conventions.AttributeK8SContainerName, conventions.AttributeContainerID,
-			conventions.AttributeContainerImageName, conventions.AttributeContainerImageTag,
+			string(conventions.K8SDeploymentNameKey), string(conventions.K8SDeploymentUIDKey),
+			string(conventions.K8SReplicaSetNameKey), string(conventions.K8SReplicaSetUIDKey),
+			string(conventions.K8SDaemonSetNameKey), string(conventions.K8SDaemonSetUIDKey),
+			string(conventions.K8SStatefulSetNameKey), string(conventions.K8SStatefulSetUIDKey),
+			string(conventions.K8SJobNameKey), string(conventions.K8SJobUIDKey),
+			string(conventions.K8SCronJobNameKey),
+			string(conventions.K8SNodeNameKey), string(conventions.K8SNodeUIDKey),
+			string(conventions.K8SContainerNameKey), string(conventions.ContainerIDKey),
+			string(conventions.ContainerImageNameKey), string(conventions.ContainerImageTagKey),
 			containerImageRepoDigests, clusterUID:
 		default:
 			return fmt.Errorf("\"%s\" is not a supported metadata field", field)
@@ -166,6 +167,10 @@ type ExtractConfig struct {
 	// It is a list of FieldExtractConfig type. See FieldExtractConfig
 	// documentation for more details.
 	Labels []FieldExtractConfig `mapstructure:"labels"`
+
+	// OtelAnnotations extracts all pod annotations with the prefix "resource.opentelemetry.io" as resource attributes
+	// E.g. "resource.opentelemetry.io/foo" becomes "foo"
+	OtelAnnotations bool `mapstructure:"otel_annotations"`
 }
 
 // FieldExtractConfig allows specifying an extraction rule to extract a resource attribute from pod (or namespace)
@@ -253,6 +258,15 @@ type FilterConfig struct {
 	//
 	// Check FieldFilterConfig for more details.
 	Labels []FieldFilterConfig `mapstructure:"labels"`
+}
+
+func (cfg *FilterConfig) Validate() error {
+	if cfg.NodeFromEnvVar != "" {
+		if _, ok := os.LookupEnv(cfg.NodeFromEnvVar); !ok {
+			return fmt.Errorf("`node_from_env_var` is configured but envvar %q is not set", cfg.NodeFromEnvVar)
+		}
+	}
+	return nil
 }
 
 // FieldFilterConfig allows specifying exactly one filter by a field.

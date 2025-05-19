@@ -11,6 +11,8 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	_ "github.com/microsoft/go-mssqldb"                     // register Db driver
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // register Db driver
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/scraper"
@@ -49,6 +51,7 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		ControllerConfig:     cfg,
 		MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+		LogsBuilderConfig:    metadata.DefaultLogsBuilderConfig(),
 		QuerySample: QuerySample{
 			Enabled:         false,
 			MaxRowsPerQuery: 100,
@@ -65,15 +68,15 @@ func createDefaultConfig() component.Config {
 func setupQueries(cfg *Config) []string {
 	var queries []string
 
-	if isDatabaseIOQueryEnabled(&cfg.MetricsBuilderConfig.Metrics) {
+	if isDatabaseIOQueryEnabled(&cfg.Metrics) {
 		queries = append(queries, getSQLServerDatabaseIOQuery(cfg.InstanceName))
 	}
 
-	if isPerfCounterQueryEnabled(&cfg.MetricsBuilderConfig.Metrics) {
+	if isPerfCounterQueryEnabled(&cfg.Metrics) {
 		queries = append(queries, getSQLServerPerformanceCounterQuery(cfg.InstanceName))
 	}
 
-	if cfg.MetricsBuilderConfig.Metrics.SqlserverDatabaseCount.Enabled {
+	if cfg.Metrics.SqlserverDatabaseCount.Enabled {
 		queries = append(queries, getSQLServerPropertiesQuery(cfg.InstanceName))
 	}
 
@@ -94,20 +97,17 @@ func setupLogQueries(cfg *Config) []string {
 	return queries
 }
 
-func directDBConnectionEnabled(config *Config) bool {
-	return config.Server != "" &&
-		config.Username != "" &&
-		string(config.Password) != ""
-}
-
 // Assumes config has all information necessary to directly connect to the database
 func getDBConnectionString(config *Config) string {
+	if config.DataSource != "" {
+		return config.DataSource
+	}
 	return fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d", config.Server, config.Username, string(config.Password), config.Port)
 }
 
 // SQL Server scraper creation is split out into a separate method for the sake of testing.
 func setupSQLServerScrapers(params receiver.Settings, cfg *Config) []*sqlServerScraperHelper {
-	if !directDBConnectionEnabled(cfg) {
+	if !cfg.isDirectDBConnectionEnabled {
 		params.Logger.Info("No direct connection will be made to the SQL Server: Configuration doesn't include some options.")
 		return nil
 	}
@@ -147,7 +147,7 @@ func setupSQLServerScrapers(params receiver.Settings, cfg *Config) []*sqlServerS
 
 // SQL Server scraper creation is split out into a separate method for the sake of testing.
 func setupSQLServerLogsScrapers(params receiver.Settings, cfg *Config) []*sqlServerScraperHelper {
-	if !directDBConnectionEnabled(cfg) {
+	if !cfg.isDirectDBConnectionEnabled {
 		params.Logger.Info("No direct connection will be made to the SQL Server: Configuration doesn't include some options.")
 		return nil
 	}
@@ -268,6 +268,7 @@ func isPerfCounterQueryEnabled(metrics *metadata.MetricsConfig) bool {
 		metrics.SqlserverDeadlockRate.Enabled ||
 		metrics.SqlserverIndexSearchRate.Enabled ||
 		metrics.SqlserverLockTimeoutRate.Enabled ||
+		metrics.SqlserverLockWaitCount.Enabled ||
 		metrics.SqlserverLockWaitRate.Enabled ||
 		metrics.SqlserverLoginRate.Enabled ||
 		metrics.SqlserverLogoutRate.Enabled ||
@@ -279,6 +280,7 @@ func isPerfCounterQueryEnabled(metrics *metadata.MetricsConfig) bool {
 		metrics.SqlserverProcessesBlocked.Enabled ||
 		metrics.SqlserverReplicaDataRate.Enabled ||
 		metrics.SqlserverResourcePoolDiskThrottledReadRate.Enabled ||
+		metrics.SqlserverResourcePoolDiskOperations.Enabled ||
 		metrics.SqlserverResourcePoolDiskThrottledWriteRate.Enabled ||
 		metrics.SqlserverTableCount.Enabled ||
 		metrics.SqlserverTransactionDelay.Enabled ||

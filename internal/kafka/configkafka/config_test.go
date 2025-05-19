@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
@@ -29,13 +30,18 @@ func TestClientConfig(t *testing.T) {
 				ResolveCanonicalBootstrapServersOnly: true,
 				ClientID:                             "vip",
 				ProtocolVersion:                      "1.2.3",
+				TLS: &configtls.ClientConfig{
+					Config: configtls.Config{
+						CAFile:   "ca.pem",
+						CertFile: "cert.pem",
+						KeyFile:  "key.pem",
+					},
+				},
 				Authentication: AuthenticationConfig{
-					TLS: &configtls.ClientConfig{
-						Config: configtls.Config{
-							CAFile:   "ca.pem",
-							CertFile: "cert.pem",
-							KeyFile:  "key.pem",
-						},
+					SASL: &SASLConfig{
+						Mechanism: "PLAIN",
+						Username:  "abc",
+						Password:  "def",
 					},
 				},
 				Metadata: MetadataConfig{
@@ -64,6 +70,30 @@ func TestClientConfig(t *testing.T) {
 					Mechanism: "PLAIN",
 					Username:  "abc",
 					Password:  "def",
+					Version:   1,
+				}
+				return cfg
+			}(),
+		},
+		"legacy_auth_tls": {
+			expected: func() ClientConfig {
+				cfg := NewDefaultClientConfig()
+				cfg.Authentication.TLS = &configtls.ClientConfig{
+					Config: configtls.Config{
+						CAFile:   "ca.pem",
+						CertFile: "cert.pem",
+						KeyFile:  "key.pem",
+					},
+				}
+				return cfg
+			}(),
+		},
+		"legacy_auth_plain_text": {
+			expected: func() ClientConfig {
+				cfg := NewDefaultClientConfig()
+				cfg.Authentication.PlainText = &PlainTextConfig{
+					Username: "abc",
+					Password: "def",
 				}
 				return cfg
 			}(),
@@ -112,6 +142,7 @@ func TestConsumerConfig(t *testing.T) {
 				MinFetchSize:     10,
 				DefaultFetchSize: 1024,
 				MaxFetchSize:     4096,
+				MaxFetchWait:     1 * time.Second,
 			},
 		},
 
@@ -132,11 +163,28 @@ func TestProducerConfig(t *testing.T) {
 		},
 		"full": {
 			expected: ProducerConfig{
-				MaxMessageBytes:  1,
-				RequiredAcks:     0,
-				Compression:      "gzip",
+				MaxMessageBytes: 1,
+				RequiredAcks:    0,
+				Compression:     "gzip",
+				CompressionParams: configcompression.CompressionParams{
+					Level: 1,
+				},
 				FlushMaxMessages: 2,
 			},
+		},
+		"default_compression_level": {
+			expected: ProducerConfig{
+				MaxMessageBytes: 1,
+				RequiredAcks:    0,
+				Compression:     "zstd",
+				CompressionParams: configcompression.CompressionParams{
+					Level: configcompression.DefaultCompressionLevel,
+				},
+				FlushMaxMessages: 2,
+			},
+		},
+		"invalid_compression_level": {
+			expectedErr: `unsupported parameters {Level:-123} for compression type "gzip"`,
 		},
 		"required_acks_all": {
 			expected: func() ProducerConfig {

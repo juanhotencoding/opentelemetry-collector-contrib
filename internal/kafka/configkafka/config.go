@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap"
 )
@@ -38,6 +39,12 @@ type ClientConfig struct {
 
 	// Authentication holds Kafka authentication details.
 	Authentication AuthenticationConfig `mapstructure:"auth"`
+
+	// TLS holds TLS-related configuration for connecting to Kafka brokers.
+	//
+	// By default the client will use an insecure connection unless
+	// SASL/AWS_MSK_IAM_OAUTHBEARER auth is configured.
+	TLS *configtls.ClientConfig `mapstructure:"tls"`
 
 	// Metadata holds metadata-related configuration for producers and consumers.
 	Metadata MetadataConfig `mapstructure:"metadata"`
@@ -92,6 +99,17 @@ type ConsumerConfig struct {
 
 	// The maximum bytes per fetch from Kafka (default "0", no limit)
 	MaxFetchSize int32 `mapstructure:"max_fetch_size"`
+
+	// The maximum amount of time to wait for MinFetchSize bytes to be
+	// available before the broker returns a response (default 250ms)
+	MaxFetchWait time.Duration `mapstructure:"max_fetch_wait"`
+	// RebalanceStrategy specifies the strategy to use for partition assignment.
+	// Possible values are "range", "roundrobin", and "sticky".
+	// Defaults to "range".
+	GroupRebalanceStrategy string `mapstructure:"group_rebalance_strategy,omitempty"`
+
+	// GroupInstanceID specifies the ID of the consumer
+	GroupInstanceID string `mapstructure:"group_instance_id,omitempty"`
 }
 
 func NewDefaultConsumerConfig() ConsumerConfig {
@@ -106,6 +124,7 @@ func NewDefaultConsumerConfig() ConsumerConfig {
 		},
 		MinFetchSize:     1,
 		MaxFetchSize:     0,
+		MaxFetchWait:     250 * time.Millisecond,
 		DefaultFetchSize: 1048576,
 	}
 }
@@ -119,6 +138,18 @@ func (c ConsumerConfig) Validate() error {
 			"initial_offset should be one of 'latest' or 'earliest'. configured value %v",
 			c.InitialOffset,
 		)
+	}
+
+	if len(c.GroupRebalanceStrategy) != 0 {
+		switch c.GroupRebalanceStrategy {
+		case sarama.RangeBalanceStrategyName, sarama.RoundRobinBalanceStrategyName, sarama.StickyBalanceStrategyName:
+			// Valid
+		default:
+			return fmt.Errorf(
+				"rebalance_strategy should be one of 'range', 'roundrobin', or 'sticky'. configured value %v",
+				c.GroupRebalanceStrategy,
+			)
+		}
 	}
 	return nil
 }
@@ -154,6 +185,9 @@ type ProducerConfig struct {
 	// The options are: 'none' (default), 'gzip', 'snappy', 'lz4', and 'zstd'
 	Compression string `mapstructure:"compression"`
 
+	// CompressionParams defines compression parameters for the producer.
+	CompressionParams configcompression.CompressionParams `mapstructure:"compression_params"`
+
 	// The maximum number of messages the producer will send in a single
 	// broker request. Defaults to 0 for unlimited. Similar to
 	// `queue.buffering.max.messages` in the JVM producer.
@@ -162,9 +196,12 @@ type ProducerConfig struct {
 
 func NewDefaultProducerConfig() ProducerConfig {
 	return ProducerConfig{
-		MaxMessageBytes:  1000000,
-		RequiredAcks:     WaitForLocal,
-		Compression:      "none",
+		MaxMessageBytes: 1000000,
+		RequiredAcks:    WaitForLocal,
+		Compression:     "none",
+		CompressionParams: configcompression.CompressionParams{
+			Level: configcompression.DefaultCompressionLevel,
+		},
 		FlushMaxMessages: 0,
 	}
 }
@@ -172,7 +209,13 @@ func NewDefaultProducerConfig() ProducerConfig {
 func (c ProducerConfig) Validate() error {
 	switch c.Compression {
 	case "none", "gzip", "snappy", "lz4", "zstd":
-		// Valid compression
+		ct := configcompression.Type(c.Compression)
+		if !ct.IsCompressed() {
+			return nil
+		}
+		if err := ct.ValidateParams(c.CompressionParams); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf(
 			"compression should be one of 'none', 'gzip', 'snappy', 'lz4', or 'zstd'. configured value is %q",
@@ -263,10 +306,19 @@ type AuthenticationConfig struct {
 	// PlainText is an alias for SASL/PLAIN authentication.
 	//
 	// Deprecated [v0.123.0]: use SASL with Mechanism set to PLAIN instead.
-	PlainText *PlainTextConfig        `mapstructure:"plain_text"`
-	SASL      *SASLConfig             `mapstructure:"sasl"`
-	TLS       *configtls.ClientConfig `mapstructure:"tls"`
-	Kerberos  *KerberosConfig         `mapstructure:"kerberos"`
+	PlainText *PlainTextConfig `mapstructure:"plain_text"`
+
+	// SASL holds SASL authentication configuration.
+	SASL *SASLConfig `mapstructure:"sasl"`
+
+	// Kerberos holds Kerberos authentication configuration.
+	Kerberos *KerberosConfig `mapstructure:"kerberos"`
+
+	// TLS holds TLS configuration for connecting to Kafka brokers.
+	//
+	// Deprecated [v0.124.0]: use ClientConfig.TLS instead. This will
+	// be used only if ClientConfig.TLS is not set.
+	TLS *configtls.ClientConfig `mapstructure:"tls"`
 }
 
 // PlainTextConfig defines plaintext authentication.
@@ -296,10 +348,10 @@ func (c SASLConfig) Validate() error {
 	case "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512":
 		// Do nothing, valid mechanism
 		if c.Username == "" {
-			return fmt.Errorf("username is required")
+			return errors.New("username is required")
 		}
 		if c.Password == "" {
-			return fmt.Errorf("password is required")
+			return errors.New("password is required")
 		}
 	default:
 		return fmt.Errorf(

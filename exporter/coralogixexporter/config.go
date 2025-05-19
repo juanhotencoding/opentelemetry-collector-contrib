@@ -59,10 +59,6 @@ type Config struct {
 	// Default Coralogix application and subsystem name values.
 	AppName   string `mapstructure:"application_name"`
 	SubSystem string `mapstructure:"subsystem_name"`
-
-	// Reference:
-	// 	https://github.com/open-telemetry/opentelemetry-collector/issues/8122
-	BatcherConfig exporterhelper.BatcherConfig `mapstructure:"batcher"` //nolint:staticcheck
 }
 
 func isEmpty(endpoint string) bool {
@@ -88,12 +84,11 @@ func (c *Config) Validate() error {
 		return errors.New("`application_name` not specified, please fix the configuration")
 	}
 
-	// check if headers exists
-	if len(c.ClientConfig.Headers) == 0 {
-		c.ClientConfig.Headers = make(map[string]configopaque.String)
+	if len(c.Headers) == 0 {
+		c.Headers = make(map[string]configopaque.String)
 	}
-	c.ClientConfig.Headers["ACCESS_TOKEN"] = c.PrivateKey
-	c.ClientConfig.Headers["appName"] = configopaque.String(c.AppName)
+	c.Headers["ACCESS_TOKEN"] = c.PrivateKey
+	c.Headers["appName"] = configopaque.String(c.AppName)
 	return nil
 }
 

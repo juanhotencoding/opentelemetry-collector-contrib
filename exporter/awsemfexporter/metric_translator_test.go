@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
-	conventions "go.opentelemetry.io/collector/semconv/v1.27.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -25,8 +25,8 @@ import (
 func createTestResourceMetrics() pmetric.ResourceMetrics {
 	rm := pmetric.NewResourceMetrics()
 	rm.Resource().Attributes().PutStr(occonventions.AttributeExporterVersion, "SomeVersion")
-	rm.Resource().Attributes().PutStr(conventions.AttributeServiceName, "myServiceName")
-	rm.Resource().Attributes().PutStr(conventions.AttributeServiceNamespace, "myServiceNS")
+	rm.Resource().Attributes().PutStr(string(conventions.ServiceNameKey), "myServiceName")
+	rm.Resource().Attributes().PutStr(string(conventions.ServiceNamespaceKey), "myServiceNS")
 	rm.Resource().Attributes().PutStr("ClusterName", "myCluster")
 	rm.Resource().Attributes().PutStr("PodName", "myPod")
 	rm.Resource().Attributes().PutStr(attributeReceiver, prometheusReceiver)
@@ -258,8 +258,8 @@ func TestTranslateOtToGroupedMetric(t *testing.T) {
 	ilm.Scope().SetName("cloudwatch-lib")
 
 	noNamespaceMetric := createTestResourceMetrics()
-	noNamespaceMetric.Resource().Attributes().Remove(conventions.AttributeServiceNamespace)
-	noNamespaceMetric.Resource().Attributes().Remove(conventions.AttributeServiceName)
+	noNamespaceMetric.Resource().Attributes().Remove(string(conventions.ServiceNamespaceKey))
+	noNamespaceMetric.Resource().Attributes().Remove(string(conventions.ServiceNameKey))
 
 	counterSumMetrics := map[string]*metricInfo{
 		"spanCounter": {
@@ -348,16 +348,16 @@ func TestTranslateOtToGroupedMetric(t *testing.T) {
 
 			for _, v := range groupedMetrics {
 				assert.Equal(t, tc.expectedNamespace, v.metadata.namespace)
-				switch {
-				case v.metadata.metricDataType == pmetric.MetricTypeSum:
+				switch v.metadata.metricDataType {
+				case pmetric.MetricTypeSum:
 					assert.Len(t, v.metrics, 2)
 					assert.Equal(t, tc.counterLabels, v.labels)
 					assert.Equal(t, counterSumMetrics, v.metrics)
-				case v.metadata.metricDataType == pmetric.MetricTypeGauge:
+				case pmetric.MetricTypeGauge:
 					assert.Len(t, v.metrics, 2)
 					assert.Equal(t, tc.counterLabels, v.labels)
 					assert.Equal(t, counterGaugeMetrics, v.metrics)
-				case v.metadata.metricDataType == pmetric.MetricTypeHistogram:
+				case pmetric.MetricTypeHistogram:
 					assert.Len(t, v.metrics, 1)
 					assert.Equal(t, tc.timerLabels, v.labels)
 					assert.Equal(t, timerMetrics, v.metrics)
@@ -370,7 +370,7 @@ func TestTranslateOtToGroupedMetric(t *testing.T) {
 
 	t.Run("No metrics", func(t *testing.T) {
 		rm := pmetric.NewResourceMetrics()
-		rm.Resource().Attributes().PutStr(conventions.AttributeServiceName, "myServiceName")
+		rm.Resource().Attributes().PutStr(string(conventions.ServiceNameKey), "myServiceName")
 		rm.Resource().Attributes().PutStr(occonventions.AttributeExporterVersion, "SomeVersion")
 		groupedMetrics := make(map[any]*groupedMetric)
 		err := translator.translateOTelToGroupedMetric(rm, groupedMetrics, config)
